@@ -53,7 +53,7 @@ internal sealed class EventProcessor(EventLoop target)
                 DispatchMapNotify(app, localEvent.Map);
                 break;
             case PInvoke.Expose:
-                DispatchExpose(app, localEvent.Expose);
+                DispatchExpose(localEvent.Expose);
                 break;
             case PInvoke.VisibilityNotify:
                 DispatchVisibilityNotify(app, localEvent.Visibility);
@@ -516,14 +516,14 @@ internal sealed class EventProcessor(EventLoop target)
         app.WindowEvent(target, window.Id, new WindowEvent(new WindowEvent.Focused(window.HasFocus)));
     }
 
-    private void DispatchExpose(IApplicationHandler app, XExposeEvent xevent)
+    private void DispatchExpose(XExposeEvent xevent)
     {
-        if (xevent.Count != 0 || !target.TryGetWindow(xevent.Window, out Window? window))
+        if (xevent.Count != 0)
         {
             return;
         }
 
-        app.WindowEvent(target, window.Id, new WindowEvent(new WindowEvent.RedrawRequested()));
+        target.RequestRedraw(xevent.Window);
     }
 
     private void DispatchVisibilityNotify(IApplicationHandler app, XVisibilityEvent xevent)

@@ -13,6 +13,7 @@ public sealed unsafe class Window : IWindow, IWindowExtX11
     private readonly EventLoop _eventLoop;
     private readonly XConnection _xconn;
     private readonly XlibWindow _window;
+    private readonly nuint? _colormap;
     private readonly nuint? _visualId;
     private PhysicalSize<uint> _surfaceSize;
     private Size? _minSurfaceSize;
@@ -49,6 +50,7 @@ public sealed unsafe class Window : IWindow, IWindowExtX11
     private Window(
         EventLoop eventLoop,
         XlibWindow window,
+        nuint? colormap,
         WindowAttributes attributes,
         PhysicalSize<uint> surfaceSize,
         double scaleFactor)
@@ -57,6 +59,7 @@ public sealed unsafe class Window : IWindow, IWindowExtX11
         _eventLoop = eventLoop;
         _xconn = eventLoop.XConnection;
         _window = window;
+        _colormap = colormap;
         _visualId = x11?.VisualId?.Value;
         _surfaceSize = surfaceSize;
         _minSurfaceSize = attributes.MinSurfaceSize;
@@ -81,6 +84,10 @@ public sealed unsafe class Window : IWindow, IWindowExtX11
     ~Window()
     {
         _ = PInvoke.XDestroyWindow(_xconn.Display, _window);
+        if (_colormap is { } colormap)
+        {
+            _ = PInvoke.XFreeColormap(_xconn.Display, colormap);
+        }
     }
 
     public WindowId Id { get; }
@@ -155,20 +162,18 @@ public sealed unsafe class Window : IWindow, IWindowExtX11
             ? new XlibWindow(embedWindow.Value)
             : eventLoop.RootWindow;
 
-        XlibWindow window = PInvoke.XCreateSimpleWindow(
-            xconn.Display,
-            parent.Value,
-            position.X,
-            position.Y,
-            Math.Max(1, size.Width),
-            Math.Max(1, size.Height),
-            0,
+        (XlibWindow window, nuint? colormap) = CreateXWindow(
+            xconn,
+            parent,
+            x11?.VisualId,
+            position,
+            size,
             border,
             background);
 
         if (window.Value == 0)
         {
-            throw new InvalidOperationException("XCreateSimpleWindow returned 0.");
+            throw new InvalidOperationException("X11 window creation returned 0.");
         }
 
         nint eventMask =
@@ -209,7 +214,7 @@ public sealed unsafe class Window : IWindow, IWindowExtX11
             SetEmbedInfo(xconn, window);
         }
 
-        Window result = new(eventLoop, window, attributes, size, scaleFactor);
+        Window result = new(eventLoop, window, colormap, attributes, size, scaleFactor);
         result._syncCounterId = syncCounterId;
         eventLoop.RegisterWindow(result);
         eventLoop.CreateImeContext(result, withIme: false);
@@ -252,10 +257,89 @@ public sealed unsafe class Window : IWindow, IWindowExtX11
         return result;
     }
 
+    private static unsafe (XlibWindow Window, nuint? Colormap) CreateXWindow(
+        XConnection xconn,
+        XlibWindow parent,
+        XVisualId? visualId,
+        PhysicalPosition<int> position,
+        PhysicalSize<uint> size,
+        nuint border,
+        nuint background)
+    {
+        uint width = Math.Max(1, size.Width);
+        uint height = Math.Max(1, size.Height);
+
+        if (visualId is not { } requestedVisual)
+        {
+            XlibWindow window = PInvoke.XCreateSimpleWindow(
+                xconn.Display,
+                parent.Value,
+                position.X,
+                position.Y,
+                width,
+                height,
+                0,
+                border,
+                background);
+            return (window, null);
+        }
+
+        XVisualInfo template = new()
+        {
+            VisualId = requestedVisual.Value,
+        };
+
+        XVisualInfo* visual = PInvoke.XGetVisualInfo(xconn.Display, PInvoke.VisualIDMask, &template, out int count);
+        if (visual is null || count == 0)
+        {
+            if (visual is not null)
+            {
+                _ = PInvoke.XFree((nint)visual);
+            }
+
+            throw new InvalidOperationException($"X visual {requestedVisual.Value} was not found.");
+        }
+
+        try
+        {
+            nuint colormap = PInvoke.XCreateColormap(xconn.Display, xconn.RootWindow, visual->Visual, PInvoke.AllocNone);
+            XSetWindowAttributes windowAttributes = new()
+            {
+                BorderPixel = border,
+                BackgroundPixel = background,
+                Colormap = colormap,
+            };
+
+            XlibWindow window = PInvoke.XCreateWindow(
+                xconn.Display,
+                parent,
+                position.X,
+                position.Y,
+                width,
+                height,
+                0,
+                visual->Depth,
+                PInvoke.InputOutput,
+                visual->Visual,
+                PInvoke.CWBorderPixel | PInvoke.CWBackPixel | PInvoke.CWColormap,
+                &windowAttributes);
+            if (window.Value == 0)
+            {
+                _ = PInvoke.XFreeColormap(xconn.Display, colormap);
+                return (window, null);
+            }
+
+            return (window, colormap);
+        }
+        finally
+        {
+            _ = PInvoke.XFree((nint)visual);
+        }
+    }
+
     public void RequestRedraw()
     {
-        _ = PInvoke.XClearArea(_xconn.Display, _window, 0, 0, 0, 0, exposures: 1);
-        _xconn.Flush();
+        _eventLoop.RequestRedraw(this);
     }
 
     public void PrePresentNotify()

@@ -29,6 +29,21 @@ internal unsafe struct XIEventMask
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal struct XVisualInfo
+{
+    public nint Visual;
+    public nuint VisualId;
+    public int Screen;
+    public int Depth;
+    public int Class;
+    public nuint RedMask;
+    public nuint GreenMask;
+    public nuint BlueMask;
+    public int ColormapSize;
+    public int BitsPerRgb;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct XIValuatorState
 {
     public int MaskLen;
@@ -870,6 +885,7 @@ internal static unsafe partial class PInvoke
     public const int VisibilityFullyObscured = 2;
     public const int CopyFromParent = 0;
     public const uint InputOutput = 1;
+    public const int AllocNone = 0;
     public const int RevertToParent = 2;
     public const int PropModeReplace = 0;
     public const long IconicState = 3;
@@ -879,6 +895,10 @@ internal static unsafe partial class PInvoke
     public const nint PResizeInc = 1 << 6;
     public const nint PBaseSize = 1 << 8;
     public const nint XUrgencyHint = 1 << 8;
+    public const nint VisualIDMask = 1;
+    public const nuint CWBackPixel = 1 << 1;
+    public const nuint CWBorderPixel = 1 << 3;
+    public const nuint CWColormap = 1 << 13;
     public const nuint CWOverrideRedirect = 1 << 9;
     public const nuint CWEventMask = 1 << 11;
     public const ushort RRConnected = 0;
@@ -1021,6 +1041,19 @@ internal static unsafe partial class PInvoke
         nint visual,
         nuint valueMask,
         XSetWindowAttributes* attributes);
+
+    [LibraryImport(X11)]
+    public static partial nuint XCreateColormap(nint display, XlibWindow window, nint visual, int alloc);
+
+    [LibraryImport(X11)]
+    public static partial int XFreeColormap(nint display, nuint colormap);
+
+    [LibraryImport(X11)]
+    public static partial XVisualInfo* XGetVisualInfo(
+        nint display,
+        nint visualInfoMask,
+        XVisualInfo* visualInfoTemplate,
+        out int count);
 
     [LibraryImport(X11)]
     public static partial int XDestroyWindow(nint display, XlibWindow window);

@@ -19,6 +19,8 @@ public sealed unsafe class EventLoop : IPlatformEventLoop, IActiveEventLoopExtX1
     private static int s_created;
     private readonly XConnection _xconn;
     private readonly Dictionary<nuint, Window> _windows = [];
+    private readonly object _redrawLock = new();
+    private readonly HashSet<nuint> _redrawRequests = [];
     private readonly Dictionary<DeviceId, Device> _devices = [];
     private readonly EventProcessor _eventProcessor;
     private readonly Context? _xkbContext;
@@ -146,6 +148,7 @@ public sealed unsafe class EventLoop : IPlatformEventLoop, IActiveEventLoopExtX1
                 app.NewEvents(this, new StartCause(new StartCause.Poll()));
                 app.AboutToWait(this);
                 ProcessActivationRequests(app);
+                DispatchRedrawRequests(app);
                 Thread.Yield();
                 continue;
             }
@@ -173,6 +176,8 @@ public sealed unsafe class EventLoop : IPlatformEventLoop, IActiveEventLoopExtX1
 
             ProcessActivationRequests(app);
 
+            DispatchRedrawRequests(app);
+
             if (proxyWakeUp)
             {
                 app.ProxyWakeUp(this);
@@ -185,6 +190,24 @@ public sealed unsafe class EventLoop : IPlatformEventLoop, IActiveEventLoopExtX1
     internal void RegisterWindow(Window window)
     {
         _windows[window.XWindow.Value] = window;
+    }
+
+    internal void RequestRedraw(Window window)
+    {
+        RequestRedraw(window.XWindow, wakeUp: true);
+    }
+
+    internal void RequestRedraw(XlibWindow window, bool wakeUp = false)
+    {
+        lock (_redrawLock)
+        {
+            _redrawRequests.Add(window.Value);
+        }
+
+        if (wakeUp)
+        {
+            new EventLoopProxyProvider(_xconn, _proxyWindow, _xconn.Atoms[AtomName.WinitWakeUp]).WakeUp();
+        }
     }
 
     internal void CreateImeContext(Window window, bool withIme)
@@ -221,6 +244,29 @@ public sealed unsafe class EventLoop : IPlatformEventLoop, IActiveEventLoopExtX1
     internal bool TryGetWindow(XlibWindow xWindow, [NotNullWhen(true)] out Window? window)
     {
         return _windows.TryGetValue(xWindow.Value, out window);
+    }
+
+    private void DispatchRedrawRequests(IApplicationHandler app)
+    {
+        nuint[] requests;
+        lock (_redrawLock)
+        {
+            if (_redrawRequests.Count == 0)
+            {
+                return;
+            }
+
+            requests = [.. _redrawRequests];
+            _redrawRequests.Clear();
+        }
+
+        foreach (nuint xWindow in requests)
+        {
+            if (TryGetWindow(new XlibWindow(xWindow), out Window? window))
+            {
+                app.WindowEvent(this, window.Id, new WindowEvent(new WindowEvent.RedrawRequested()));
+            }
+        }
     }
 
     internal bool RemoveWindow(XlibWindow xWindow, [NotNullWhen(true)] out Window? window)
