@@ -21,6 +21,7 @@ public sealed unsafe class EventLoop : IPlatformEventLoop, IActiveEventLoopExtX1
     private readonly Dictionary<nuint, Window> _windows = [];
     private readonly object _redrawLock = new();
     private readonly HashSet<nuint> _redrawRequests = [];
+    private readonly List<nuint> _redrawRequestScratch = [];
     private readonly Dictionary<DeviceId, Device> _devices = [];
     private readonly EventProcessor _eventProcessor;
     private readonly Context? _xkbContext;
@@ -248,7 +249,6 @@ public sealed unsafe class EventLoop : IPlatformEventLoop, IActiveEventLoopExtX1
 
     private void DispatchRedrawRequests(IApplicationHandler app)
     {
-        nuint[] requests;
         lock (_redrawLock)
         {
             if (_redrawRequests.Count == 0)
@@ -256,16 +256,23 @@ public sealed unsafe class EventLoop : IPlatformEventLoop, IActiveEventLoopExtX1
                 return;
             }
 
-            requests = [.. _redrawRequests];
+            _redrawRequestScratch.AddRange(_redrawRequests);
             _redrawRequests.Clear();
         }
 
-        foreach (nuint xWindow in requests)
+        try
         {
-            if (TryGetWindow(new XlibWindow(xWindow), out Window? window))
+            foreach (nuint xWindow in _redrawRequestScratch)
             {
-                app.WindowEvent(this, window.Id, new WindowEvent(new WindowEvent.RedrawRequested()));
+                if (TryGetWindow(new XlibWindow(xWindow), out Window? window))
+                {
+                    app.WindowEvent(this, window.Id, new WindowEvent(new WindowEvent.RedrawRequested()));
+                }
             }
+        }
+        finally
+        {
+            _redrawRequestScratch.Clear();
         }
     }
 

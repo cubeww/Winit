@@ -66,11 +66,16 @@ internal sealed class EventSink
         }
     }
 
-    public IEnumerable<Event> Drain()
+    public bool TryPop(out Event @event)
     {
-        while (_events.Count > 0)
+        if (_events.Count == 0)
         {
-            yield return _events.Dequeue();
+            @event = default;
+            return false;
         }
+
+        @event = _events.Dequeue();
+        return true;
     }
+
 }

@@ -299,16 +299,13 @@ internal sealed unsafe class WinitState : IDisposable
         }
     }
 
-    public WindowCompositorUpdate[] DrainWindowCompositorUpdates()
+    public void DrainWindowCompositorUpdates(List<WindowCompositorUpdate> destination)
     {
-        if (WindowCompositorUpdates.Count == 0)
+        if (WindowCompositorUpdates.Count != 0)
         {
-            return [];
+            destination.AddRange(WindowCompositorUpdates);
+            WindowCompositorUpdates.Clear();
         }
-
-        WindowCompositorUpdate[] updates = [.. WindowCompositorUpdates];
-        WindowCompositorUpdates.Clear();
-        return updates;
     }
 
     public void QueueWindowResized(WindowId windowId)

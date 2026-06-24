@@ -96,7 +96,7 @@ internal sealed class EventLoopRunner(EventLoop eventLoop, uint threadId, HWND t
     {
         if (@event.IsRedrawRequested)
         {
-            CallEventHandler((app, activeEventLoop) => @event.Dispatch(activeEventLoop, app));
+            DispatchEvent(@event);
             InterruptMessageDispatch = true;
         }
         else if (ShouldBuffer())
@@ -105,7 +105,7 @@ internal sealed class EventLoopRunner(EventLoop eventLoop, uint threadId, HWND t
         }
         else
         {
-            CallEventHandler((app, activeEventLoop) => @event.Dispatch(activeEventLoop, app));
+            DispatchEvent(@event);
             DispatchBufferedEvents();
         }
     }
@@ -120,24 +120,40 @@ internal sealed class EventLoopRunner(EventLoop eventLoop, uint threadId, HWND t
         return _application is null || _handlingEvent;
     }
 
-    private void CallEventHandler(Action<IApplicationHandler, EventLoop> invoke)
+    private bool TryBeginEventHandler(out IApplicationHandler app)
     {
-        if (_application is not { } app)
+        app = _application!;
+        if (app is null)
         {
             StoreException(new InvalidOperationException("no application handler is registered"));
-            return;
+            return false;
         }
 
         if (_handlingEvent)
         {
             StoreException(new InvalidOperationException("application handler re-entered unexpectedly"));
-            return;
+            return false;
         }
 
         _handlingEvent = true;
+        return true;
+    }
+
+    private void EndEventHandler()
+    {
+        _handlingEvent = false;
+    }
+
+    private void DispatchEvent(EventLoopEvent @event)
+    {
+        if (!TryBeginEventHandler(out IApplicationHandler app))
+        {
+            return;
+        }
+
         try
         {
-            invoke(app, eventLoop);
+            @event.Dispatch(eventLoop, app);
         }
         catch (Exception exception)
         {
@@ -145,7 +161,70 @@ internal sealed class EventLoopRunner(EventLoop eventLoop, uint threadId, HWND t
         }
         finally
         {
-            _handlingEvent = false;
+            EndEventHandler();
+        }
+    }
+
+    private void CallNewEvents(StartCause startCause)
+    {
+        if (!TryBeginEventHandler(out IApplicationHandler app))
+        {
+            return;
+        }
+
+        try
+        {
+            app.NewEvents(eventLoop, startCause);
+        }
+        catch (Exception exception)
+        {
+            StoreException(exception);
+        }
+        finally
+        {
+            EndEventHandler();
+        }
+    }
+
+    private void CallCanCreateSurfaces()
+    {
+        if (!TryBeginEventHandler(out IApplicationHandler app))
+        {
+            return;
+        }
+
+        try
+        {
+            app.CanCreateSurfaces(eventLoop);
+        }
+        catch (Exception exception)
+        {
+            StoreException(exception);
+        }
+        finally
+        {
+            EndEventHandler();
+        }
+    }
+
+    private void CallAboutToWait()
+    {
+        if (!TryBeginEventHandler(out IApplicationHandler app))
+        {
+            return;
+        }
+
+        try
+        {
+            app.AboutToWait(eventLoop);
+        }
+        catch (Exception exception)
+        {
+            StoreException(exception);
+        }
+        finally
+        {
+            EndEventHandler();
         }
     }
 
@@ -154,7 +233,7 @@ internal sealed class EventLoopRunner(EventLoop eventLoop, uint threadId, HWND t
         while (_eventBuffer.Count > 0)
         {
             EventLoopEvent @event = _eventBuffer.Dequeue();
-            CallEventHandler((app, activeEventLoop) => @event.Dispatch(activeEventLoop, app));
+            DispatchEvent(@event);
         }
     }
 
@@ -175,12 +254,12 @@ internal sealed class EventLoopRunner(EventLoop eventLoop, uint threadId, HWND t
                 break;
             case (RunnerState.Uninitialized, RunnerState.Idle):
                 CallNewEvents(init: true);
-                CallEventHandler((app, activeEventLoop) => app.AboutToWait(activeEventLoop));
+                CallAboutToWait();
                 _lastEventsCleared = Instant.Now();
                 break;
             case (RunnerState.Uninitialized, RunnerState.Destroyed):
                 CallNewEvents(init: true);
-                CallEventHandler((app, activeEventLoop) => app.AboutToWait(activeEventLoop));
+                CallAboutToWait();
                 _lastEventsCleared = Instant.Now();
                 break;
             case (_, RunnerState.Uninitialized):
@@ -191,11 +270,11 @@ internal sealed class EventLoopRunner(EventLoop eventLoop, uint threadId, HWND t
             case (RunnerState.Idle, RunnerState.Destroyed):
                 break;
             case (RunnerState.HandlingMainEvents, RunnerState.Idle):
-                CallEventHandler((app, activeEventLoop) => app.AboutToWait(activeEventLoop));
+                CallAboutToWait();
                 _lastEventsCleared = Instant.Now();
                 break;
             case (RunnerState.HandlingMainEvents, RunnerState.Destroyed):
-                CallEventHandler((app, activeEventLoop) => app.AboutToWait(activeEventLoop));
+                CallAboutToWait();
                 _lastEventsCleared = Instant.Now();
                 break;
             case (RunnerState.Destroyed, _):
@@ -206,11 +285,11 @@ internal sealed class EventLoopRunner(EventLoop eventLoop, uint threadId, HWND t
     private void CallNewEvents(bool init)
     {
         StartCause startCause = StartCause(init);
-        CallEventHandler((app, activeEventLoop) => app.NewEvents(activeEventLoop, startCause));
+        CallNewEvents(startCause);
 
         if (init)
         {
-            CallEventHandler((app, activeEventLoop) => app.CanCreateSurfaces(activeEventLoop));
+            CallCanCreateSurfaces();
         }
 
         DispatchBufferedEvents();

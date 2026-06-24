@@ -39,6 +39,8 @@ public sealed unsafe class EventLoop :
     private static int s_created;
 
     private readonly WinitState _state;
+    private readonly List<WindowCompositorUpdate> _compositorUpdates = [];
+    private readonly List<Window> _redrawWindows = [];
     private readonly int _proxyWakeFd;
     private readonly int _eventWakeFd;
     private PumpEventNotifier? _pumpEventNotifier;
@@ -237,7 +239,7 @@ public sealed unsafe class EventLoop :
     {
         DispatchCompositorUpdates(app);
 
-        foreach (Event pendingEvent in _state.EventsSink.Drain())
+        while (_state.EventsSink.TryPop(out Event pendingEvent))
         {
             if (pendingEvent.TryGetValue(out Event.Window window))
             {
@@ -255,66 +257,84 @@ public sealed unsafe class EventLoop :
 
     private void DispatchCompositorUpdates(IApplicationHandler app)
     {
-        foreach (WindowCompositorUpdate compositorUpdate in _state.DrainWindowCompositorUpdates())
+        _state.DrainWindowCompositorUpdates(_compositorUpdates);
+
+        try
         {
-            if (!_state.Windows.TryGetValue(compositorUpdate.WindowId, out Window? window))
+            foreach (WindowCompositorUpdate compositorUpdate in _compositorUpdates)
             {
-                continue;
-            }
-
-            WindowCompositorUpdate update = compositorUpdate;
-            if (update.ScaleChanged)
-            {
-                PhysicalSize<uint> surfaceSize = window.SurfaceSize;
-                double scaleFactor = window.ScaleFactor;
-                SurfaceSizeState sizeState = new(surfaceSize);
-                app.WindowEvent(
-                    this,
-                    window.Id,
-                    new WindowEvent(new WindowEvent.ScaleFactorChanged(
-                        scaleFactor,
-                        SurfaceSizeWriter.Create(sizeState))));
-
-                PhysicalSize<uint> requestedSurfaceSize = sizeState.SurfaceSize;
-                if (requestedSurfaceSize != surfaceSize)
+                if (!_state.Windows.TryGetValue(compositorUpdate.WindowId, out Window? window))
                 {
-                    _ = window.RequestSurfaceSize(Size.FromPhysical(requestedSurfaceSize));
-                    update.Resized = true;
+                    continue;
+                }
+
+                WindowCompositorUpdate update = compositorUpdate;
+                if (update.ScaleChanged)
+                {
+                    PhysicalSize<uint> surfaceSize = window.SurfaceSize;
+                    double scaleFactor = window.ScaleFactor;
+                    SurfaceSizeState sizeState = new(surfaceSize);
+                    app.WindowEvent(
+                        this,
+                        window.Id,
+                        new WindowEvent(new WindowEvent.ScaleFactorChanged(
+                            scaleFactor,
+                            SurfaceSizeWriter.Create(sizeState))));
+
+                    PhysicalSize<uint> requestedSurfaceSize = sizeState.SurfaceSize;
+                    if (requestedSurfaceSize != surfaceSize)
+                    {
+                        _ = window.RequestSurfaceSize(Size.FromPhysical(requestedSurfaceSize));
+                        update.Resized = true;
+                    }
+                }
+
+                if (update.Resized || update.ScaleChanged)
+                {
+                    app.WindowEvent(
+                        this,
+                        window.Id,
+                        new WindowEvent(new WindowEvent.SurfaceResized(window.SurfaceSize)));
+                    window.RequestRedraw();
+                }
+
+                if (update.CloseWindow)
+                {
+                    app.WindowEvent(
+                        this,
+                        window.Id,
+                        new WindowEvent(new WindowEvent.CloseRequested()));
                 }
             }
-
-            if (update.Resized || update.ScaleChanged)
-            {
-                app.WindowEvent(
-                    this,
-                    window.Id,
-                    new WindowEvent(new WindowEvent.SurfaceResized(window.SurfaceSize)));
-                window.RequestRedraw();
-            }
-
-            if (update.CloseWindow)
-            {
-                app.WindowEvent(
-                    this,
-                    window.Id,
-                    new WindowEvent(new WindowEvent.CloseRequested()));
-            }
+        }
+        finally
+        {
+            _compositorUpdates.Clear();
         }
     }
 
     private void DispatchRedrawRequests(IApplicationHandler app)
     {
-        foreach (Window window in _state.Windows.Values.ToArray())
-        {
-            if (!window.TakeRedrawRequested())
-            {
-                continue;
-            }
+        _redrawWindows.AddRange(_state.Windows.Values);
 
-            app.WindowEvent(
-                this,
-                window.Id,
-                new WindowEvent(new WindowEvent.RedrawRequested()));
+        try
+        {
+            foreach (Window window in _redrawWindows)
+            {
+                if (!window.TakeRedrawRequested())
+                {
+                    continue;
+                }
+
+                app.WindowEvent(
+                    this,
+                    window.Id,
+                    new WindowEvent(new WindowEvent.RedrawRequested()));
+            }
+        }
+        finally
+        {
+            _redrawWindows.Clear();
         }
     }
 
